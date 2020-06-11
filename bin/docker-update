@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+import sys, os, argparse, subprocess, docker, time
+# Get location
+__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+# Adds the docker-update dir to sys.path so definitions.py can be imported 
+sys.path.insert(0, __location__+"/..")
+
+from definitions import containers
+
+def update(c):
+    client = docker.from_env()
+    nr = False
+    try:
+        container = client.containers.get(c)
+    except docker.errors.NotFound:
+        print(f"Container \"{c}\" not found.")
+        choice = input("Continue? [y/n]: ").lower()
+        if choice == "y":
+            nr = True
+        else:
+            sys.exit()
+    print(f"Updating {c}...")
+    repo = containers[c]["repo"]
+    try:
+        print("Attempting to pull image...")
+        t = "latest"
+        if ":" in repo:
+            s = repo.split(":")
+            repo = s[0]
+            t = s[1]
+        client.images.pull(repo, tag=t)
+        print("Done.")
+    except docker.errors.ImageNotFound:
+        print(f"Repo \"{repo}\" not found.")
+        sys.exit()
+    if not nr:
+        container.stop()
+        container.remove()
+        print("Removed old container. Creating new...")
+    command = containers[c]["command"]+" "+containers[c]["repo"]
+    print(command)
+    p = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+    p.communicate()
+    try:
+        container = client.containers.get(c)
+        print("Success.")
+    except docker.errors.NotFound:
+        print("Failed.")
+        sys.exit()
+    container.start()
+    if "after" in containers[c]:
+        print("Post-creation command found. running...")
+        p = subprocess.Popen(containers[c]["after"].split(), stdout=subprocess.PIPE)
+        p.communicate()
+        print("Wait 20s for script? [y/n]")
+        choice = input(">:").lower()
+        if choice == "y":
+            time.sleep(20)
+        print("Done. Restarting container...")
+        container.restart()
+        print("Done.")
+
+parser = argparse.ArgumentParser()
+group = parser.add_mutually_exclusive_group(required=True)
+group.add_argument("container", help="name of the container.", nargs='?')
+group.add_argument("-a", "--all", help="Updates all available containers", action="store_true")
+args = parser.parse_args()
+
+jobs = []
+if args.all:
+    for n in containers.keys():
+        jobs.append(n)
+else:
+    jobs.append(args.container)
+
+for j in jobs:
+    update(j)
